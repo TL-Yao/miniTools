@@ -1,0 +1,13 @@
+# Local config (contains API keys)
+config.yaml
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+
+.claude/
