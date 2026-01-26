@@ -48,6 +48,7 @@ go vet ./...
 ## Conventions
 
 - **No sudo required**: All scripts and installations must work without sudo privileges. Install to `~/.local/bin` instead of `/usr/local/bin`.
+- **Embedded config**: All config variables must be injected into the binary at build time via `-ldflags`. Update `install.sh` when adding new config values.
 - Each CLI tool lives in its own directory under `cmd/`
 - Use `cobra` or standard `flag` package for CLI argument parsing
 - Follow Go naming conventions (camelCase for unexported, PascalCase for exported)

@@ -7,6 +7,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// These variables are set at build time via -ldflags
+var (
+	EmbeddedAPIKey        string
+	EmbeddedTranslateModel string
+)
+
 // Config holds application configuration
 type Config struct {
 	AnthropicAPIKey string `yaml:"anthropic_api_key"`
@@ -39,13 +45,17 @@ func Load() (*Config, error) {
 		}
 	}
 
-	// Environment variables override config file
+	// Priority: env var > config file > embedded value
 	if apiKey := os.Getenv("ANTHROPIC_API_KEY"); apiKey != "" {
 		cfg.AnthropicAPIKey = apiKey
+	} else if cfg.AnthropicAPIKey == "" && EmbeddedAPIKey != "" {
+		cfg.AnthropicAPIKey = EmbeddedAPIKey
 	}
 
 	if model := os.Getenv("MINITOOL_TRANSLATE_MODEL"); model != "" {
 		cfg.TranslateModel = model
+	} else if cfg.TranslateModel == "" && EmbeddedTranslateModel != "" {
+		cfg.TranslateModel = EmbeddedTranslateModel
 	}
 
 	return cfg, nil

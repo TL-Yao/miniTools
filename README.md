@@ -65,3 +65,7 @@ Copy `config.yaml.example` to `config.yaml` and add your API key:
 ```yaml
 anthropic_api_key: your-key-here
 ```
+
+Config values are embedded into the binary during `./install.sh`, so `minitool tr` works from any directory.
+
+**Note:** Re-run `./install.sh` after changing `config.yaml` to apply updates.
