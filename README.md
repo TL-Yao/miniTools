@@ -13,6 +13,14 @@ A collection of CLI utilities.
 ./install.sh
 ```
 
+If `minitool` command not found after install, add this to your `~/.zshrc`:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Then run `source ~/.zshrc` or restart terminal.
+
 ## Commands
 
 ### Timestamp Conversion
