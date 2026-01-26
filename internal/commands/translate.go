@@ -1,14 +1,15 @@
 package commands
 
 import (
-	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 
+	"github.com/chzyer/readline"
 	"github.com/spf13/cobra"
 	"github.com/tongleyao/minitools/internal/config"
 	"github.com/tongleyao/minitools/internal/translator"
@@ -25,8 +26,13 @@ Commands:
   exit   - Exit the translator
   quit   - Same as exit
 
-The translator automatically detects the language and translates between Chinese and English.
-You can follow up with requests like "more casual" or "simpler words" to modify the translation.`,
+Usage:
+  1. First input: the text you want to translate
+  2. Follow-up inputs: modification requests (e.g., "more formal", "shorter")
+  3. To translate NEW text, use /new to start a fresh session
+
+The translator uses casual, conversational tone by default (like texting).
+Specify "formal" or "academic" if you need a different style.`,
 	RunE: runTranslate,
 }
 
@@ -61,13 +67,24 @@ func runTranslate(cmd *cobra.Command, args []string) error {
 	fmt.Println("Translator ready. Type text to translate, /new to reset, exit to quit.")
 	fmt.Println()
 
-	reader := bufio.NewReader(os.Stdin)
+	rl, err := readline.NewEx(&readline.Config{
+		Prompt:          "> ",
+		InterruptPrompt: "^C",
+		EOFPrompt:       "exit",
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize readline: %w", err)
+	}
+	defer rl.Close()
 
 	for {
-		fmt.Print("> ")
-		input, err := reader.ReadString('\n')
+		input, err := rl.Readline()
 		if err != nil {
-			break
+			if err == readline.ErrInterrupt || err == io.EOF {
+				fmt.Println("Bye!")
+				return nil
+			}
+			return err
 		}
 
 		input = strings.TrimSpace(input)
@@ -100,8 +117,6 @@ func runTranslate(cmd *cobra.Command, args []string) error {
 		fmt.Println(result)
 		fmt.Println()
 	}
-
-	return nil
 }
 
 func printHelp() {
@@ -111,9 +126,13 @@ Commands:
   /help         - Show this help
   exit, quit    - Exit the translator
 
-Tips:
-  - Just type text to translate
-  - Follow up with "more casual", "simpler", "formal" etc. to modify
-  - Chinese text will be translated to English, and vice versa
+Usage:
+  1. First input: the text you want to translate
+  2. Follow-up inputs: modification requests (e.g., "more formal", "shorter")
+  3. To translate NEW text, use /new to start a fresh session
+
+Style:
+  - Default: casual, conversational (like texting/IM)
+  - Say "formal" or "academic" if needed
 `)
 }

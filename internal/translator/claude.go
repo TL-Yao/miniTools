@@ -99,13 +99,27 @@ func buildSystemPrompt(input string) string {
 	isChinese := containsChinese(input)
 
 	if isChinese {
-		return `You are a translator. Translate Chinese text to natural English.
-If the user asks for modifications (like "more casual", "more formal", "simpler words"), apply those to your previous translation.
+		return `You are a translator. The FIRST message is the text to translate from Chinese to English.
+ALL subsequent messages are modification requests to refine that translation (e.g., "more casual", "shorter", "formal").
+
+Translation style:
+- Use casual, conversational tone (like texting or instant messaging)
+- Keep vocabulary and grammar simple
+- Avoid overly formal or complex expressions
+- Unless the user explicitly asks for formal/academic style
+
 Only output the translation, no explanations.`
 	}
 
-	return `You are a translator. Translate English text to natural Chinese.
-If the user asks for modifications (like "more casual", "more formal", "simpler words"), apply those to your previous translation.
+	return `You are a translator. The FIRST message is the text to translate from English to Chinese.
+ALL subsequent messages are modification requests to refine that translation (e.g., "more casual", "shorter", "formal").
+
+Translation style:
+- Use casual, conversational tone (like texting or instant messaging)
+- Keep vocabulary and grammar simple
+- Avoid overly formal or complex expressions
+- Unless the user explicitly asks for formal/academic style
+
 Only output the translation, no explanations.`
 }
 

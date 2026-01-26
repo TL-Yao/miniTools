@@ -47,6 +47,7 @@ go vet ./...
 
 ## Conventions
 
+- **No sudo required**: All scripts and installations must work without sudo privileges. Install to `~/.local/bin` instead of `/usr/local/bin`.
 - Each CLI tool lives in its own directory under `cmd/`
 - Use `cobra` or standard `flag` package for CLI argument parsing
 - Follow Go naming conventions (camelCase for unexported, PascalCase for exported)

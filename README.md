@@ -41,9 +41,14 @@ echo "HELLO" | minitool lower
 minitool tr
 ```
 
-Commands in translation mode:
-- `/new` - start new conversation
-- `exit` - quit
+Usage:
+1. First input: text to translate (auto-detects Chinese/English)
+2. Follow-up inputs: modification requests (e.g., "more formal", "shorter")
+3. Use `/new` to translate different text
+
+Default style is casual/conversational (like texting). Say "formal" if needed.
+
+Commands: `/new`, `/help`, `exit`
 
 ## Configuration
 
