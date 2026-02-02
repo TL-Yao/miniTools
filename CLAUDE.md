@@ -71,19 +71,23 @@ go vet ./...
 | `minitool lower <text>` | Convert text to lowercase |
 | `minitool tr` | Interactive Chinese-English translation |
 | `minitool db list` | List all configured Teleport databases and environments |
-| `minitool db proxy <name>` | Start local proxy for DataGrip (auto tsh logout + login) |
-| `minitool db proxy all --env <env>` | Start proxies for all databases in an environment |
-| `minitool db connect <name>` | Direct connect to database CLI (auto tsh logout + login) |
+| `minitool db proxy <name>` | Start local proxy for DataGrip (smart session management) |
+| `minitool db proxy all` | Start proxies for all databases across all environments |
+| `minitool db proxy all --env <env>` | Start proxies for all databases in a specific environment |
+| `minitool db connect <name>` | Direct connect to database CLI (smart session management) |
 
 ### Teleport Authentication
 
-Database commands automatically handle Teleport authentication:
-1. Run `tsh logout` to clear any existing session
-2. Run `tsh login --proxy=<proxy> <cluster>` based on the database's environment
-3. Wait for browser authentication to complete
-4. Proceed with the database operation
+Database commands automatically handle Teleport authentication with smart session management:
+1. Check if already logged in to the target environment with a valid session (via `tsh status --format=json`)
+2. Skip login if session is valid (expires in > 5 minutes)
+3. Only perform `tsh login` when needed (no unnecessary logouts)
+4. Support multiple environments simultaneously via tsh profiles
 
-This ensures proper environment switching when connecting to databases in different Teleport clusters.
+Key improvements:
+- **No unnecessary re-authentication**: Reuses existing valid sessions
+- **Multi-environment support**: Can maintain sessions for multiple Teleport clusters simultaneously
+- **Session expiry detection**: Automatically re-authenticates when session is about to expire
 
 ## Configuration
 
@@ -91,3 +95,46 @@ Config file: `~/.config/minitool/config.yaml`
 
 Environment variables:
 - `ANTHROPIC_API_KEY` - API key for translation feature
+
+## Lessons Learned
+
+### Teleport Multi-Environment Support (Feb 2026)
+
+**Problem**: When implementing `proxy all` to support multiple Teleport environments simultaneously, production database proxies failed with "authentication handshake failed: EOF" errors, even though sessions were valid.
+
+**Root Causes**:
+1. **Session conflict**: Initial implementation called `tsh logout` before each environment login, which cleared ALL profiles (not just the current one), breaking the multi-environment support
+2. **Missing --proxy flag**: When multiple tsh profiles exist, `tsh proxy db` commands default to the "active" profile (marked with `>` in `tsh status`), causing authentication failures for databases in other environments
+
+**Solutions**:
+1. **Remove unnecessary logout**: tsh natively supports multiple profiles simultaneously. Never call `tsh logout` when switching environments - just call `tsh login` directly
+2. **Add --proxy parameter**: Always include `--proxy <proxy-url>` in `tsh proxy db` commands to explicitly specify which Teleport proxy to use:
+   ```go
+   tshArgs := []string{"proxy", "db", serviceName, "--tunnel",
+       "--proxy", env.Proxy,      // Critical for multi-environment
+       "--cluster", env.Cluster,  // Also needed
+       "--db-user", dbUser,
+       "--db-name", dbName,
+       "--port", port}
+   ```
+3. **Session validation**: Check session validity before login using `tsh status --format=json` and parse the `valid_until` timestamp with a 5-minute buffer
+4. **Error visibility**: Capture stderr from proxy processes to display meaningful error messages instead of silently failing
+
+**Key Insights**:
+- `tsh status` shows all profiles but marks one as "active" (with `>` symbol)
+- `tsh db ls` without `--cluster` only shows databases from the active profile
+- Each `tsh login --proxy=<url>` creates/updates a separate profile in `~/.tsh/keys/`
+- The `--proxy` flag in `tsh proxy db` is essential for routing commands to the correct profile
+- Always validate by checking `tsh status` shows multiple profiles after multi-environment login
+
+**Testing Multi-Environment Setup**:
+```bash
+# Login to both environments
+minitool db proxy all
+
+# Verify both profiles exist
+tsh status  # Should show 2+ profiles with different proxy URLs
+
+# Check profile directories
+ls ~/.tsh/keys/  # Should show multiple cluster directories
+```

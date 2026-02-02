@@ -2,6 +2,7 @@ package commands
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -63,12 +64,53 @@ func init() {
 
 	// Add flags for proxy command
 	dbProxyCmd.Flags().IntVarP(&proxyPort, "port", "p", 0, "Local port to listen on (0 for auto)")
-	dbProxyCmd.Flags().StringVarP(&proxyEnv, "env", "e", "", "Environment to use (required for 'all' mode)")
+	dbProxyCmd.Flags().StringVarP(&proxyEnv, "env", "e", "", "Environment to use (optional, filters databases by environment)")
 }
 
-// ensureTshLogin performs tsh login for the given environment
-// It first runs 'tsh logout' to clear any existing session, then
-// runs 'tsh login --proxy=<proxy> <cluster>' and waits for browser authentication
+// TshStatus represents the JSON output from 'tsh status --format=json'
+type TshStatus struct {
+	Active struct {
+		ProfileURL string    `json:"profile_url"`
+		Cluster    string    `json:"cluster"`
+		ValidUntil time.Time `json:"valid_until"`
+	} `json:"active"`
+}
+
+// isLoggedInToEnvironment checks if already logged into the target environment
+// and if the session is still valid (with at least 5 minutes buffer)
+func isLoggedInToEnvironment(env *config.TeleportEnvironment) (bool, error) {
+	// Run tsh status with JSON format
+	cmd := exec.Command("tsh", "status", "--format=json")
+	output, err := cmd.Output()
+
+	// If command fails, assume not logged in
+	if err != nil {
+		return false, nil
+	}
+
+	var status TshStatus
+	if err := json.Unmarshal(output, &status); err != nil {
+		return false, fmt.Errorf("failed to parse tsh status: %w", err)
+	}
+
+	// Check if logged into the correct cluster/proxy
+	expectedProxy := fmt.Sprintf("https://%s", env.Proxy)
+	if status.Active.ProfileURL != expectedProxy {
+		return false, nil
+	}
+
+	// Check if session is still valid with at least 5 minutes buffer
+	bufferTime := 5 * time.Minute
+	if time.Until(status.Active.ValidUntil) < bufferTime {
+		return false, nil
+	}
+
+	return true, nil
+}
+
+// ensureTshLogin performs tsh login for the given environment if needed
+// It checks if already logged in to the target environment with a valid session
+// tsh supports multiple profiles, so we don't need to logout before logging into a different environment
 func ensureTshLogin(env *config.TeleportEnvironment, envName string) error {
 	if env == nil {
 		// No environment configured, skip login (backward compatibility)
@@ -79,14 +121,23 @@ func ensureTshLogin(env *config.TeleportEnvironment, envName string) error {
 		return fmt.Errorf("environment '%s' is missing proxy or cluster configuration", envName)
 	}
 
-	// First, logout to ensure clean state for environment switch
-	fmt.Println("Logging out from current session...")
-	logoutCmd := exec.Command("tsh", "logout")
-	logoutCmd.Stdout = nil
-	logoutCmd.Stderr = nil
-	logoutCmd.Run() // Ignore errors - logout may fail if not logged in
+	// Check if already logged in to the correct environment with valid session
+	loggedIn, err := isLoggedInToEnvironment(env)
+	if err != nil {
+		fmt.Printf("Warning: failed to check login status: %v\n", err)
+		// Continue with login attempt
+	}
 
-	fmt.Printf("\nLogging in to environment: %s\n", envName)
+	if loggedIn {
+		fmt.Printf("✓ Already logged in to environment: %s (session is valid)\n\n", envName)
+		return nil
+	}
+
+	// No logout needed - tsh supports multiple profiles simultaneously
+	// If the session is expired, tsh login will automatically refresh it
+	// If it's a different environment, tsh will create a new profile
+
+	fmt.Printf("Logging in to environment: %s\n", envName)
 	fmt.Printf("Command: tsh login --proxy=%s %s\n\n", env.Proxy, env.Cluster)
 
 	// Build tsh login command
@@ -179,24 +230,20 @@ func runDBProxy(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	// Handle "all" mode - start proxies for all databases in an environment
+	// Handle "all" mode - start proxies for all databases
 	if dbName == "all" {
-		if proxyEnv == "" {
-			envNames := cfg.GetEnvironmentNames()
-			if len(envNames) > 0 {
-				return fmt.Errorf("'all' mode requires --env flag to specify the environment\n\nAvailable environments: %s", strings.Join(envNames, ", "))
+		// If --env is specified, only proxy databases in that environment
+		if proxyEnv != "" {
+			env := cfg.GetEnvironment(proxyEnv)
+			if env == nil {
+				envNames := cfg.GetEnvironmentNames()
+				return fmt.Errorf("environment '%s' not found in config\n\nAvailable environments: %s", proxyEnv, strings.Join(envNames, ", "))
 			}
-			// No environments configured, fall back to all databases
-			return runAllProxies(cfg, "", nil)
+			return runAllProxies(cfg, proxyEnv, env)
 		}
 
-		env := cfg.GetEnvironment(proxyEnv)
-		if env == nil {
-			envNames := cfg.GetEnvironmentNames()
-			return fmt.Errorf("environment '%s' not found in config\n\nAvailable environments: %s", proxyEnv, strings.Join(envNames, ", "))
-		}
-
-		return runAllProxies(cfg, proxyEnv, env)
+		// No --env specified: proxy all databases across all environments
+		return runAllProxiesMultiEnv(cfg)
 	}
 
 	db := cfg.GetDatabase(dbName)
@@ -265,6 +312,7 @@ func runAllProxies(cfg *config.Config, envName string, env *config.TeleportEnvir
 
 	// Track all running processes for cleanup
 	var processes []*exec.Cmd
+	var failedProxies []string
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 
@@ -280,9 +328,12 @@ func runAllProxies(cfg *config.Config, envName string, env *config.TeleportEnvir
 		go func(db *config.TeleportDatabase) {
 			defer wg.Done()
 
-			tshCmd, err := startProxyProcess(db)
+			tshCmd, err := startProxyProcess(db, cfg)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "[%s] Failed to start: %v\n", db.Name, err)
+				mu.Lock()
+				failedProxies = append(failedProxies, db.Name)
+				mu.Unlock()
 				return
 			}
 
@@ -291,16 +342,38 @@ func runAllProxies(cfg *config.Config, envName string, env *config.TeleportEnvir
 			mu.Unlock()
 
 			// Wait for this proxy to finish
-			tshCmd.Wait()
+			if err := tshCmd.Wait(); err != nil {
+				// Check if proxy exited unexpectedly (not from our signal)
+				if exitErr, ok := err.(*exec.ExitError); ok {
+					// Only report if it wasn't killed by signal
+					if exitErr.ExitCode() != -1 && exitErr.ExitCode() != 130 {
+						fmt.Fprintf(os.Stderr, "[%s] Proxy exited unexpectedly with code %d\n", db.Name, exitErr.ExitCode())
+						mu.Lock()
+						failedProxies = append(failedProxies, db.Name)
+						mu.Unlock()
+					}
+				}
+			}
 		}(db)
 	}
 
 	// Wait a moment for all proxies to start
-	time.Sleep(2 * time.Second)
+	time.Sleep(3 * time.Second)
 
 	// Display summary of all connections
 	fmt.Println()
-	fmt.Println("✓ All Proxies Started")
+	mu.Lock()
+	successCount := len(databases) - len(failedProxies)
+	if len(failedProxies) > 0 {
+		fmt.Printf("⚠ %d/%d Proxies Started (%d failed)\n", successCount, len(databases), len(failedProxies))
+		fmt.Println("\nFailed proxies:")
+		for _, name := range failedProxies {
+			fmt.Printf("  - %s\n", name)
+		}
+	} else {
+		fmt.Println("✓ All Proxies Started")
+	}
+	mu.Unlock()
 	fmt.Println()
 	fmt.Println("DataGrip Connection Settings:")
 	fmt.Println(strings.Repeat("━", 60))
@@ -332,8 +405,17 @@ func runAllProxies(cfg *config.Config, envName string, env *config.TeleportEnvir
 }
 
 // startProxyProcess starts a single tsh proxy process and returns the command
-func startProxyProcess(db *config.TeleportDatabase) (*exec.Cmd, error) {
+func startProxyProcess(db *config.TeleportDatabase, cfg *config.Config) (*exec.Cmd, error) {
 	tshArgs := []string{"proxy", "db", db.ServiceName, "--tunnel"}
+
+	// Add --proxy flag to explicitly specify which teleport proxy to use
+	// This is critical when multiple profiles exist to avoid authentication issues
+	if db.Environment != "" {
+		env := cfg.GetEnvironment(db.Environment)
+		if env != nil && env.Proxy != "" {
+			tshArgs = append(tshArgs, "--proxy", env.Proxy)
+		}
+	}
 
 	if db.DBUser != "" {
 		tshArgs = append(tshArgs, "--db-user", db.DBUser)
@@ -351,13 +433,31 @@ func startProxyProcess(db *config.TeleportDatabase) (*exec.Cmd, error) {
 	fmt.Printf("[%s] Starting on port %d...\n", db.Name, db.LocalPort)
 
 	tshCmd := exec.Command("tsh", tshArgs...)
-	// Redirect output to null to avoid cluttering terminal
+
+	// Capture stderr to detect errors, but suppress stdout to avoid clutter
+	stderrPipe, err := tshCmd.StderrPipe()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create stderr pipe: %w", err)
+	}
+
 	tshCmd.Stdout = nil
-	tshCmd.Stderr = nil
 
 	if err := tshCmd.Start(); err != nil {
 		return nil, err
 	}
+
+	// Read stderr in background and print errors if any
+	go func() {
+		scanner := bufio.NewScanner(stderrPipe)
+		for scanner.Scan() {
+			line := scanner.Text()
+			// Only print actual errors, skip warnings and info messages
+			if strings.Contains(line, "ERROR") || strings.Contains(line, "error") ||
+				strings.Contains(line, "failed") || strings.Contains(line, "Failed") {
+				fmt.Fprintf(os.Stderr, "[%s] %s\n", db.Name, line)
+			}
+		}
+	}()
 
 	return tshCmd, nil
 }
@@ -612,4 +712,173 @@ func listAvailableDBs(cfg *config.Config) string {
 		sb.WriteString("\n")
 	}
 	return sb.String()
+}
+
+// runAllProxiesMultiEnv starts proxies for all databases across all environments
+// This supports multiple environments running simultaneously
+func runAllProxiesMultiEnv(cfg *config.Config) error {
+	databases := cfg.GetDatabases()
+	if len(databases) == 0 {
+		return fmt.Errorf("no databases configured")
+	}
+
+	// Validate all databases have local_port configured
+	var missingPorts []string
+	usedPorts := make(map[int]string)
+	for _, db := range databases {
+		if db.LocalPort == 0 {
+			missingPorts = append(missingPorts, db.Name)
+		} else {
+			if existing, ok := usedPorts[db.LocalPort]; ok {
+				return fmt.Errorf("duplicate local_port %d configured for '%s' and '%s'", db.LocalPort, existing, db.Name)
+			}
+			usedPorts[db.LocalPort] = db.Name
+		}
+	}
+
+	if len(missingPorts) > 0 {
+		return fmt.Errorf("'all' mode requires local_port for each database.\nMissing local_port: %s", strings.Join(missingPorts, ", "))
+	}
+
+	// Group databases by environment
+	envDatabases := make(map[string][]config.TeleportDatabase)
+	for _, db := range databases {
+		envName := db.Environment
+		if envName == "" {
+			envName = "(no environment)"
+		}
+		envDatabases[envName] = append(envDatabases[envName], db)
+	}
+
+	// Login to each environment
+	loginedEnvs := make(map[string]bool)
+	for envName := range envDatabases {
+		if envName == "(no environment)" {
+			continue
+		}
+
+		env := cfg.GetEnvironment(envName)
+		if env != nil {
+			if err := ensureTshLogin(env, envName); err != nil {
+				return fmt.Errorf("failed to login to environment '%s': %w", envName, err)
+			}
+			loginedEnvs[envName] = true
+		}
+	}
+
+	// Check all ports are available
+	for _, db := range databases {
+		if err := checkPortAvailable(db.LocalPort); err != nil {
+			return fmt.Errorf("port %d for '%s' is already in use", db.LocalPort, db.Name)
+		}
+	}
+
+	// Display summary of what we're starting
+	fmt.Printf("Starting proxies for %d databases across %d environment(s)...\n", len(databases), len(envDatabases))
+	fmt.Println(strings.Repeat("━", 60))
+	for envName, dbs := range envDatabases {
+		fmt.Printf("  [%s] %d database(s)\n", envName, len(dbs))
+	}
+	fmt.Println(strings.Repeat("━", 60))
+
+	// Track all running processes for cleanup
+	var processes []*exec.Cmd
+	var failedProxies []string
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
+	// Handle signals for graceful shutdown of all proxies
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	// Start each proxy in a goroutine
+	for i := range databases {
+		db := &databases[i]
+		wg.Add(1)
+
+		go func(db *config.TeleportDatabase) {
+			defer wg.Done()
+
+			tshCmd, err := startProxyProcess(db, cfg)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[%s] Failed to start: %v\n", db.Name, err)
+				mu.Lock()
+				failedProxies = append(failedProxies, db.Name)
+				mu.Unlock()
+				return
+			}
+
+			mu.Lock()
+			processes = append(processes, tshCmd)
+			mu.Unlock()
+
+			// Wait for this proxy to finish
+			if err := tshCmd.Wait(); err != nil {
+				// Check if proxy exited unexpectedly (not from our signal)
+				if exitErr, ok := err.(*exec.ExitError); ok {
+					// Only report if it wasn't killed by signal
+					if exitErr.ExitCode() != -1 && exitErr.ExitCode() != 130 {
+						fmt.Fprintf(os.Stderr, "[%s] Proxy exited unexpectedly with code %d\n", db.Name, exitErr.ExitCode())
+						mu.Lock()
+						failedProxies = append(failedProxies, db.Name)
+						mu.Unlock()
+					}
+				}
+			}
+		}(db)
+	}
+
+	// Wait a moment for all proxies to start
+	time.Sleep(3 * time.Second)
+
+	// Display summary of all connections
+	fmt.Println()
+	mu.Lock()
+	successCount := len(databases) - len(failedProxies)
+	if len(failedProxies) > 0 {
+		fmt.Printf("⚠ %d/%d Proxies Started (%d failed)\n", successCount, len(databases), len(failedProxies))
+		fmt.Println("\nFailed proxies:")
+		for _, name := range failedProxies {
+			fmt.Printf("  - %s\n", name)
+		}
+	} else {
+		fmt.Println("✓ All Proxies Started")
+	}
+	mu.Unlock()
+	fmt.Println()
+	fmt.Println("DataGrip Connection Settings:")
+	fmt.Println(strings.Repeat("━", 60))
+
+	// Group by environment for display
+	for envName, dbs := range envDatabases {
+		if len(envDatabases) > 1 {
+			fmt.Printf("\n  [%s]\n", envName)
+		}
+		for _, db := range dbs {
+			fmt.Printf("  %-20s localhost:%-5d  (%s)\n", db.Name, db.LocalPort, db.DBName)
+		}
+	}
+
+	fmt.Println(strings.Repeat("━", 60))
+	fmt.Println()
+	fmt.Println("Press Ctrl+C to stop all proxies...")
+
+	// Wait for signal
+	<-sigChan
+	fmt.Println("\n\nShutting down all proxies...")
+
+	// Kill all processes
+	mu.Lock()
+	for _, p := range processes {
+		if p.Process != nil {
+			p.Process.Signal(syscall.SIGTERM)
+		}
+	}
+	mu.Unlock()
+
+	// Wait for all to finish
+	wg.Wait()
+	fmt.Println("All proxies stopped.")
+
+	return nil
 }
