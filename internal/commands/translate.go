@@ -120,7 +120,7 @@ func runTranslate(cmd *cobra.Command, args []string) error {
 }
 
 func printHelp() {
-	fmt.Println(`
+	fmt.Print(`
 Commands:
   /new, /clear  - Start a new conversation (clear history)
   /help         - Show this help

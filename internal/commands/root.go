@@ -20,4 +20,5 @@ func init() {
 	rootCmd.AddCommand(padAddrCmd)
 	rootCmd.AddCommand(lowerCmd)
 	rootCmd.AddCommand(trCmd)
+	rootCmd.AddCommand(dbCmd)
 }

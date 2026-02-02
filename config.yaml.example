@@ -3,3 +3,29 @@
 
 anthropic_api_key: your-api-key-here
 translate_model: claude-3-haiku-20240307
+
+# Teleport database configuration
+# Add your database connections here for use with 'minitool db' commands
+teleport:
+  databases:
+    # Example PostgreSQL database
+    - name: prod-postgres                                      # Custom alias for this database
+      description: Production database
+      service_name: prod-xxx-20230724-rds-aurora-xxx-1-xxxx    # Teleport registered service name
+      db_name: myapp                                           # Actual database name (--db-name)
+      db_protocol: postgres                                    # postgres, mysql, mongodb, etc.
+      db_user: admin                                           # Database user
+      # cluster: xxx                                           # Optional: Teleport cluster
+      local_port: 5432                                         # Local port for proxy (0 for auto)
+      labels:                                                  # Optional: Teleport labels
+        env: prod
+        team: backend
+
+# Usage:
+#   minitool db list                    - List all configured databases
+#   minitool db proxy <db-name>         - Start proxy for DataGrip (local port forwarding)
+#   minitool db connect <db-name>       - Direct connect to database CLI
+#   minitool db proxy <db-name> -p 5432 - Use specific local port (overrides config)
+#
+# Generated command format:
+#   tsh db connect <service_name> --db-user=<user> --db-name=<name>

@@ -70,6 +70,9 @@ go vet ./...
 | `minitool padaddr <addr>` | Left-pad address to 32 bytes |
 | `minitool lower <text>` | Convert text to lowercase |
 | `minitool tr` | Interactive Chinese-English translation |
+| `minitool db list` | List all configured Teleport databases |
+| `minitool db proxy <name>` | Start local proxy for DataGrip |
+| `minitool db connect <name>` | Direct connect to database CLI |
 
 ## Configuration
 

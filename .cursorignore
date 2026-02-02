@@ -1,0 +1,10 @@
+# Sensitive configuration files
+config.yaml
+
+# IDE folders
+.idea/
+.vscode/
+
+# OS files
+.DS_Store
+

@@ -9,14 +9,54 @@ import (
 
 // These variables are set at build time via -ldflags
 var (
-	EmbeddedAPIKey        string
+	EmbeddedAPIKey         string
 	EmbeddedTranslateModel string
 )
 
+// TeleportDatabase holds configuration for a single Teleport database
+type TeleportDatabase struct {
+	Name        string            `yaml:"name"`         // Custom alias for this database (e.g. prod-db)
+	Description string            `yaml:"description"`  // Description of this database
+	ServiceName string            `yaml:"service_name"` // Teleport registered service name
+	DBName      string            `yaml:"db_name"`      // Actual database name (--db-name parameter)
+	DBProtocol  string            `yaml:"db_protocol"`  // Protocol (postgres, mysql, etc.)
+	DBUser      string            `yaml:"db_user"`      // Database user
+	Cluster     string            `yaml:"cluster"`      // Optional: Teleport cluster
+	LocalPort   int               `yaml:"local_port"`   // Local port for proxy mode (0 for auto)
+	Labels      map[string]string `yaml:"labels"`       // Optional: Teleport labels
+}
+
+// TeleportConfig holds Teleport-related configuration
+type TeleportConfig struct {
+	Databases []TeleportDatabase `yaml:"databases"`
+}
+
 // Config holds application configuration
 type Config struct {
-	AnthropicAPIKey string `yaml:"anthropic_api_key"`
-	TranslateModel  string `yaml:"translate_model"`
+	AnthropicAPIKey string          `yaml:"anthropic_api_key"`
+	TranslateModel  string          `yaml:"translate_model"`
+	Teleport        *TeleportConfig `yaml:"teleport"`
+}
+
+// GetDatabase finds a database by name from the Teleport config
+func (c *Config) GetDatabase(name string) *TeleportDatabase {
+	if c.Teleport == nil {
+		return nil
+	}
+	for i := range c.Teleport.Databases {
+		if c.Teleport.Databases[i].Name == name {
+			return &c.Teleport.Databases[i]
+		}
+	}
+	return nil
+}
+
+// GetDatabases returns all configured databases
+func (c *Config) GetDatabases() []TeleportDatabase {
+	if c.Teleport == nil {
+		return nil
+	}
+	return c.Teleport.Databases
 }
 
 // DefaultConfig returns default configuration
