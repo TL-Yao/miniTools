@@ -408,13 +408,24 @@ func runAllProxies(cfg *config.Config, envName string, env *config.TeleportEnvir
 func startProxyProcess(db *config.TeleportDatabase, cfg *config.Config) (*exec.Cmd, error) {
 	tshArgs := []string{"proxy", "db", db.ServiceName, "--tunnel"}
 
-	// Add --proxy flag to explicitly specify which teleport proxy to use
+	// Add --proxy and --cluster flags to explicitly specify which teleport environment to use
 	// This is critical when multiple profiles exist to avoid authentication issues
 	if db.Environment != "" {
 		env := cfg.GetEnvironment(db.Environment)
-		if env != nil && env.Proxy != "" {
-			tshArgs = append(tshArgs, "--proxy", env.Proxy)
+		if env != nil {
+			if env.Proxy != "" {
+				tshArgs = append(tshArgs, "--proxy", env.Proxy)
+			}
+			// Prefer cluster from environment config (single source of truth)
+			if env.Cluster != "" {
+				tshArgs = append(tshArgs, "--cluster", env.Cluster)
+			}
 		}
+	}
+
+	// Fallback to database-level cluster if no environment config (backward compatibility)
+	if db.Cluster != "" && db.Environment == "" {
+		tshArgs = append(tshArgs, "--cluster", db.Cluster)
 	}
 
 	if db.DBUser != "" {
@@ -422,9 +433,6 @@ func startProxyProcess(db *config.TeleportDatabase, cfg *config.Config) (*exec.C
 	}
 	if db.DBName != "" {
 		tshArgs = append(tshArgs, "--db-name", db.DBName)
-	}
-	if db.Cluster != "" {
-		tshArgs = append(tshArgs, "--cluster", db.Cluster)
 	}
 	if db.LocalPort > 0 {
 		tshArgs = append(tshArgs, "--port", fmt.Sprintf("%d", db.LocalPort))

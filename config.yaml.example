@@ -42,15 +42,19 @@ teleport:
       local_port: 5433
 
 # Usage:
-#   minitool db list                      - List all configured databases
-#   minitool db proxy <db-name>           - Start proxy for DataGrip (auto tsh login)
-#   minitool db proxy all --env <env>     - Start proxies for all databases in environment
-#   minitool db connect <db-name>         - Direct connect to database CLI (auto tsh login)
+#   minitool db list                      - List all configured databases and environments
+#   minitool db proxy <db-name>           - Start proxy for DataGrip (smart session management)
+#   minitool db proxy all                 - Start proxies for ALL databases across all environments
+#   minitool db proxy all --env <env>     - Start proxies for all databases in specific environment
+#   minitool db connect <db-name>         - Direct connect to database CLI
 #   minitool db proxy <db-name> -p 5432   - Use specific local port (overrides config)
 #
-# The tool will automatically run 'tsh login --proxy=<proxy> <cluster>' before
-# connecting to databases, based on the environment configuration.
+# Smart Session Management:
+# - Reuses existing valid sessions (no unnecessary browser prompts)
+# - Supports multiple environments simultaneously (e.g., prod + staging)
+# - Only re-authenticates when session expires (<5 min remaining)
+# - Automatically reads proxy and cluster from environment config
 #
 # Generated command format:
 #   tsh login --proxy=<proxy> <cluster>
-#   tsh db connect <service_name> --db-user=<user> --db-name=<name>
+#   tsh proxy db <service_name> --proxy=<proxy> --cluster=<cluster> --db-user=<user> --db-name=<name> --port=<port>

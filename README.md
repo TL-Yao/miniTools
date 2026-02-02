@@ -62,11 +62,20 @@ Commands: `/new`, `/help`, `exit`
 
 ```bash
 minitool db list                      # List all configured databases and environments
-minitool db proxy <db-name>           # Start local proxy for DataGrip (auto tsh login)
+minitool db proxy <db-name>           # Start local proxy for DataGrip
 minitool db proxy <db-name> -p 5432   # Use specific local port (overrides config)
-minitool db proxy all --env <env>     # Start proxies for all databases in an environment
-minitool db connect <db-name>         # Direct connect to database CLI (auto tsh login)
+minitool db proxy all                 # Start proxies for ALL databases across all environments
+minitool db proxy all --env <env>     # Start proxies for all databases in a specific environment
+minitool db connect <db-name>         # Direct connect to database CLI
 ```
+
+#### Smart Session Management
+
+The tool features intelligent Teleport session management:
+- **Reuses existing sessions**: Checks if you're already logged in before re-authenticating
+- **Multi-environment support**: Can maintain sessions for multiple Teleport clusters simultaneously (e.g., production + staging)
+- **Automatic expiry detection**: Only re-authenticates when session expires (< 5 minutes remaining)
+- **No unnecessary browser prompts**: Skips login if session is still valid
 
 Configure environments and databases in `config.yaml`:
 
@@ -84,15 +93,17 @@ teleport:
   databases:
     - name: prod-db                                        # Custom alias
       description: Production database
-      environment: production                              # Environment for tsh login
+      environment: production                              # Environment name (proxy & cluster are read from environments)
       service_name: prod-xxx-20230724-rds-aurora-xxx-1    # Teleport service name
       db_name: myapp                                       # Actual database name
       db_protocol: postgres
       db_user: admin
-      local_port: 5432                                     # Local port for proxy
+      local_port: 5432                                     # Local port for proxy (required for 'all' mode)
 ```
 
-The tool automatically runs `tsh login --proxy=<proxy> <cluster>` before connecting to databases based on the environment configuration.
+**Important**: 
+- Each database only needs to specify `environment` - the `proxy` and `cluster` are automatically read from the corresponding environment configuration
+- All databases must have unique `local_port` values for `proxy all` mode to work
 
 #### Using Proxy Mode with DataGrip
 
@@ -105,8 +116,10 @@ minitool db proxy prod-db
 You will see output like:
 
 ```
+✓ Already logged in to environment: production (session is valid)
+
 Starting proxy for: prod-db (Production database)
-Command: tsh proxy db prod-xxx-20230724-rds-aurora-xxx-1 --db-user admin --db-name myapp --port 5432
+Command: tsh proxy db prod-xxx-xxx-rds-xxx-xxx-1 --proxy=... --cluster=... --db-user admin --db-name myapp --port 5432
 
 ✓ Teleport Proxy Started
 
@@ -123,6 +136,8 @@ DataGrip Connection Settings:
 
 Press Ctrl+C to stop the proxy...
 ```
+
+> **Note**: If this is your first time or the session expired, it will prompt for browser authentication.
 
 **Step 2: Configure DataGrip**
 
@@ -145,76 +160,87 @@ Press Ctrl+C to stop the proxy...
 
 Keep the terminal with proxy running while using DataGrip. Press `Ctrl+C` to stop when done.
 
-#### Running Multiple Proxies by Environment
+#### Running Multiple Proxies
 
-To connect to multiple databases in the same environment, use the `--env` flag with `proxy all`:
-
-```yaml
-teleport:
-  environments:
-    production:
-      proxy: "general-prod.xxx.com:443"
-      cluster: "general.xxx.prod.cdcinternal.com"
-
-  databases:
-    - name: prod-db-1
-      environment: production
-      service_name: prod-xxx-rds-1
-      db_name: myapp
-      db_user: admin
-      local_port: 5432
-
-    - name: prod-db-2
-      environment: production
-      service_name: prod-xxx-rds-2
-      db_name: analytics
-      db_user: admin
-      local_port: 5433
-```
-
-**Start all proxies for an environment:**
+**Option 1: All databases across all environments (recommended)**
 
 ```bash
-minitool db proxy all --env production
+minitool db proxy all
 ```
 
 This will:
-1. Run `tsh login` for the production environment (opens browser for auth)
-2. Start proxies for all databases in that environment
+1. Login to each environment (if not already logged in or session expired)
+2. Start proxies for ALL databases in ALL environments simultaneously
+3. Maintain separate sessions for each environment
 
+Example output:
 ```
-Logging in to environment: production
-Command: tsh login --proxy=general-prod.xxx.com:443 general.xxx.prod.cdcinternal.com
+✓ Already logged in to environment: production (session is valid)
+
+Logging in to environment: staging
+Command: tsh login --proxy=general-xxx.xxx.com:443 general.xxx.staging.xxx.com
 
 ✓ Login successful
 
-Starting proxies for 2 databases in environment 'production'...
+Starting proxies for 15 databases across 2 environment(s)...
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  [production] 11 database(s)
+  [staging] 4 database(s)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 [prod-db-1] Starting on port 5432...
-[prod-db-2] Starting on port 5433...
+[staging-db-1] Starting on port 6432...
+...
 
 ✓ All Proxies Started
 
 DataGrip Connection Settings:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  [production]
   prod-db-1            localhost:5432   (myapp)
   prod-db-2            localhost:5433   (analytics)
+
+  [staging]
+  staging-db-1         localhost:6432   (myapp)
+  staging-db-2         localhost:6433   (analytics)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Press Ctrl+C to stop all proxies...
 ```
 
-**Run proxies separately (each with its own tsh login):**
+**Option 2: All databases in a specific environment**
 
 ```bash
-# Terminal 1
-minitool db proxy prod-db-1
-
-# Terminal 2
-minitool db proxy prod-db-2
+minitool db proxy all --env production
 ```
 
-> **Note**: The tool will check if the port is already in use before starting the proxy.
+This will only start proxies for databases in the production environment.
+
+**Option 3: Single database**
+
+```bash
+minitool db proxy prod-db-1
+```
+
+**Configuration requirements for `proxy all`:**
+- Each database must have a unique `local_port` configured
+- Each database should specify `environment` (proxy and cluster are read from environment config)
+- Port numbers must not conflict across environments
+
+**Verifying multi-environment sessions:**
+
+```bash
+# Check active sessions
+tsh status
+
+# Should show multiple profiles:
+# > Profile URL:   https://xxx-staging.xxx.com:443
+#   ...
+#   Profile URL:   https://xxx-prod.xxx.com:443
+#   ...
+```
+
+> **Note**: The tool automatically checks if ports are available before starting proxies and will report any failures with detailed error messages.
 
 ## Configuration
 

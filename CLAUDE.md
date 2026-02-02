@@ -108,15 +108,18 @@ Environment variables:
 
 **Solutions**:
 1. **Remove unnecessary logout**: tsh natively supports multiple profiles simultaneously. Never call `tsh logout` when switching environments - just call `tsh login` directly
-2. **Add --proxy parameter**: Always include `--proxy <proxy-url>` in `tsh proxy db` commands to explicitly specify which Teleport proxy to use:
+2. **Add --proxy and --cluster parameters**: Always read from environment config and include in `tsh proxy db` commands:
    ```go
+   // Read from environment config (single source of truth)
+   env := cfg.GetEnvironment(db.Environment)
    tshArgs := []string{"proxy", "db", serviceName, "--tunnel",
        "--proxy", env.Proxy,      // Critical for multi-environment
-       "--cluster", env.Cluster,  // Also needed
+       "--cluster", env.Cluster,  // Routes to correct cluster
        "--db-user", dbUser,
        "--db-name", dbName,
        "--port", port}
    ```
+   Database configs should only specify `environment` name, not duplicate proxy/cluster values
 3. **Session validation**: Check session validity before login using `tsh status --format=json` and parse the `valid_until` timestamp with a 5-minute buffer
 4. **Error visibility**: Capture stderr from proxy processes to display meaningful error messages instead of silently failing
 
