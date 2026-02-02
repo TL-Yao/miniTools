@@ -53,6 +53,7 @@ var dbConnectCmd = &cobra.Command{
 
 var (
 	proxyPort int
+	proxyEnv  string
 )
 
 func init() {
@@ -62,6 +63,49 @@ func init() {
 
 	// Add flags for proxy command
 	dbProxyCmd.Flags().IntVarP(&proxyPort, "port", "p", 0, "Local port to listen on (0 for auto)")
+	dbProxyCmd.Flags().StringVarP(&proxyEnv, "env", "e", "", "Environment to use (required for 'all' mode)")
+}
+
+// ensureTshLogin performs tsh login for the given environment
+// It first runs 'tsh logout' to clear any existing session, then
+// runs 'tsh login --proxy=<proxy> <cluster>' and waits for browser authentication
+func ensureTshLogin(env *config.TeleportEnvironment, envName string) error {
+	if env == nil {
+		// No environment configured, skip login (backward compatibility)
+		return nil
+	}
+
+	if env.Proxy == "" || env.Cluster == "" {
+		return fmt.Errorf("environment '%s' is missing proxy or cluster configuration", envName)
+	}
+
+	// First, logout to ensure clean state for environment switch
+	fmt.Println("Logging out from current session...")
+	logoutCmd := exec.Command("tsh", "logout")
+	logoutCmd.Stdout = nil
+	logoutCmd.Stderr = nil
+	logoutCmd.Run() // Ignore errors - logout may fail if not logged in
+
+	fmt.Printf("\nLogging in to environment: %s\n", envName)
+	fmt.Printf("Command: tsh login --proxy=%s %s\n\n", env.Proxy, env.Cluster)
+
+	// Build tsh login command
+	tshArgs := []string{"login", "--proxy=" + env.Proxy, env.Cluster}
+
+	tshCmd := exec.Command("tsh", tshArgs...)
+	tshCmd.Stdin = os.Stdin
+	tshCmd.Stdout = os.Stdout
+	tshCmd.Stderr = os.Stderr
+
+	// Run the login command - this will open browser for authentication
+	if err := tshCmd.Run(); err != nil {
+		return fmt.Errorf("tsh login failed: %w", err)
+	}
+
+	fmt.Println("\n✓ Login successful")
+	fmt.Println()
+
+	return nil
 }
 
 func runDBList(cmd *cobra.Command, args []string) error {
@@ -93,6 +137,9 @@ teleport:
 		fmt.Printf("    Service: %s\n", db.ServiceName)
 		fmt.Printf("    DB Name: %-10s Protocol: %s\n", db.DBName, db.DBProtocol)
 		fmt.Printf("    User: %-13s Cluster: %s\n", db.DBUser, db.Cluster)
+		if db.Environment != "" {
+			fmt.Printf("    Environment: %s\n", db.Environment)
+		}
 		if db.LocalPort > 0 {
 			fmt.Printf("    Local Port: %d\n", db.LocalPort)
 		}
@@ -105,6 +152,22 @@ teleport:
 		}
 	}
 	fmt.Println()
+
+	// Show available environments
+	envNames := cfg.GetEnvironmentNames()
+	if len(envNames) > 0 {
+		fmt.Println("Configured Environments:")
+		fmt.Println(strings.Repeat("━", 60))
+		for _, name := range envNames {
+			env := cfg.GetEnvironment(name)
+			if env != nil {
+				fmt.Printf("  %-15s proxy: %s\n", name, env.Proxy)
+				fmt.Printf("                cluster: %s\n", env.Cluster)
+			}
+		}
+		fmt.Println()
+	}
+
 	return nil
 }
 
@@ -116,9 +179,24 @@ func runDBProxy(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	// Handle "all" mode - start proxies for all databases
+	// Handle "all" mode - start proxies for all databases in an environment
 	if dbName == "all" {
-		return runAllProxies(cfg)
+		if proxyEnv == "" {
+			envNames := cfg.GetEnvironmentNames()
+			if len(envNames) > 0 {
+				return fmt.Errorf("'all' mode requires --env flag to specify the environment\n\nAvailable environments: %s", strings.Join(envNames, ", "))
+			}
+			// No environments configured, fall back to all databases
+			return runAllProxies(cfg, "", nil)
+		}
+
+		env := cfg.GetEnvironment(proxyEnv)
+		if env == nil {
+			envNames := cfg.GetEnvironmentNames()
+			return fmt.Errorf("environment '%s' not found in config\n\nAvailable environments: %s", proxyEnv, strings.Join(envNames, ", "))
+		}
+
+		return runAllProxies(cfg, proxyEnv, env)
 	}
 
 	db := cfg.GetDatabase(dbName)
@@ -127,13 +205,22 @@ func runDBProxy(cmd *cobra.Command, args []string) error {
 			dbName, listAvailableDBs(cfg))
 	}
 
-	return startSingleProxy(db, proxyPort)
+	return startSingleProxy(cfg, db, proxyPort)
 }
 
-// runAllProxies starts proxies for all configured databases
-func runAllProxies(cfg *config.Config) error {
-	databases := cfg.GetDatabases()
+// runAllProxies starts proxies for all databases in the specified environment
+func runAllProxies(cfg *config.Config, envName string, env *config.TeleportEnvironment) error {
+	var databases []config.TeleportDatabase
+	if envName != "" {
+		databases = cfg.GetDatabasesByEnvironment(envName)
+	} else {
+		databases = cfg.GetDatabases()
+	}
+
 	if len(databases) == 0 {
+		if envName != "" {
+			return fmt.Errorf("no databases configured for environment '%s'", envName)
+		}
 		return fmt.Errorf("no databases configured")
 	}
 
@@ -155,6 +242,13 @@ func runAllProxies(cfg *config.Config) error {
 		return fmt.Errorf("'all' mode requires local_port for each database.\nMissing local_port: %s", strings.Join(missingPorts, ", "))
 	}
 
+	// Perform tsh login first if environment is specified
+	if env != nil {
+		if err := ensureTshLogin(env, envName); err != nil {
+			return err
+		}
+	}
+
 	// Check all ports are available
 	for _, db := range databases {
 		if err := checkPortAvailable(db.LocalPort); err != nil {
@@ -162,7 +256,11 @@ func runAllProxies(cfg *config.Config) error {
 		}
 	}
 
-	fmt.Printf("Starting proxies for %d databases...\n", len(databases))
+	if envName != "" {
+		fmt.Printf("Starting proxies for %d databases in environment '%s'...\n", len(databases), envName)
+	} else {
+		fmt.Printf("Starting proxies for %d databases...\n", len(databases))
+	}
 	fmt.Println(strings.Repeat("━", 60))
 
 	// Track all running processes for cleanup
@@ -265,7 +363,17 @@ func startProxyProcess(db *config.TeleportDatabase) (*exec.Cmd, error) {
 }
 
 // startSingleProxy starts a proxy for a single database (original behavior)
-func startSingleProxy(db *config.TeleportDatabase, cliPort int) error {
+func startSingleProxy(cfg *config.Config, db *config.TeleportDatabase, cliPort int) error {
+	// Perform tsh login if environment is configured
+	if db.Environment != "" {
+		env := cfg.GetEnvironment(db.Environment)
+		if env != nil {
+			if err := ensureTshLogin(env, db.Environment); err != nil {
+				return err
+			}
+		}
+	}
+
 	// Build tsh proxy db command
 	// Format: tsh proxy db <service-name> --db-user=<user> --db-name=<name> --tunnel
 	// --tunnel mode allows connecting without SSL certificates
@@ -411,6 +519,16 @@ func runDBConnect(cmd *cobra.Command, args []string) error {
 			dbName, listAvailableDBs(cfg))
 	}
 
+	// Perform tsh login if environment is configured
+	if db.Environment != "" {
+		env := cfg.GetEnvironment(db.Environment)
+		if env != nil {
+			if err := ensureTshLogin(env, db.Environment); err != nil {
+				return err
+			}
+		}
+	}
+
 	// Build tsh db connect command
 	// Format: tsh db connect <service-name> --db-user=<user> --db-name=<name>
 	tshArgs := []string{"db", "connect", db.ServiceName}
@@ -433,17 +551,13 @@ func runDBConnect(cmd *cobra.Command, args []string) error {
 	fmt.Println()
 	fmt.Printf("Command: tsh %s\n\n", strings.Join(tshArgs, " "))
 
-	// Note: If not logged in, tsh will automatically prompt for login
-	// After login completes, tsh will continue with the database connection
-
 	// Execute tsh db connect with stdin/stdout/stderr attached
-	// This allows tsh to handle login interactively if needed
 	tshCmd := exec.Command("tsh", tshArgs...)
 	tshCmd.Stdin = os.Stdin
 	tshCmd.Stdout = os.Stdout
 	tshCmd.Stderr = os.Stderr
 
-	// Run the command - it will handle login flow automatically
+	// Run the command
 	if err := tshCmd.Run(); err != nil {
 		return fmt.Errorf("tsh db connect failed: %w", err)
 	}

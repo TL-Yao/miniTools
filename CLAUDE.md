@@ -70,9 +70,20 @@ go vet ./...
 | `minitool padaddr <addr>` | Left-pad address to 32 bytes |
 | `minitool lower <text>` | Convert text to lowercase |
 | `minitool tr` | Interactive Chinese-English translation |
-| `minitool db list` | List all configured Teleport databases |
-| `minitool db proxy <name>` | Start local proxy for DataGrip |
-| `minitool db connect <name>` | Direct connect to database CLI |
+| `minitool db list` | List all configured Teleport databases and environments |
+| `minitool db proxy <name>` | Start local proxy for DataGrip (auto tsh logout + login) |
+| `minitool db proxy all --env <env>` | Start proxies for all databases in an environment |
+| `minitool db connect <name>` | Direct connect to database CLI (auto tsh logout + login) |
+
+### Teleport Authentication
+
+Database commands automatically handle Teleport authentication:
+1. Run `tsh logout` to clear any existing session
+2. Run `tsh login --proxy=<proxy> <cluster>` based on the database's environment
+3. Wait for browser authentication to complete
+4. Proceed with the database operation
+
+This ensures proper environment switching when connecting to databases in different Teleport clusters.
 
 ## Configuration
 

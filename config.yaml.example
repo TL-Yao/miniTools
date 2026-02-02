@@ -7,25 +7,50 @@ translate_model: claude-3-haiku-20240307
 # Teleport database configuration
 # Add your database connections here for use with 'minitool db' commands
 teleport:
+  # Environment configurations for tsh login
+  # Each environment has its own proxy and cluster for authentication
+  environments:
+    production:
+      proxy: "general-prod.xxx.com:443"
+      cluster: "general.xxx.prod.cdcinternal.com"
+    staging:
+      proxy: "general-staging.xxx.com:443"
+      cluster: "general.xxx.staging.cdcinternal.com"
+
   databases:
-    # Example PostgreSQL database
+    # Example PostgreSQL database (production)
     - name: prod-postgres                                      # Custom alias for this database
       description: Production database
+      environment: production                                  # Environment for tsh login
       service_name: prod-xxx-20230724-rds-aurora-xxx-1-xxxx    # Teleport registered service name
       db_name: myapp                                           # Actual database name (--db-name)
       db_protocol: postgres                                    # postgres, mysql, mongodb, etc.
       db_user: admin                                           # Database user
-      # cluster: xxx                                           # Optional: Teleport cluster
       local_port: 5432                                         # Local port for proxy (0 for auto)
       labels:                                                  # Optional: Teleport labels
         env: prod
         team: backend
 
+    # Example PostgreSQL database (staging)
+    - name: staging-postgres
+      description: Staging database
+      environment: staging
+      service_name: staging-xxx-20230724-rds-aurora-xxx-1
+      db_name: myapp
+      db_protocol: postgres
+      db_user: admin
+      local_port: 5433
+
 # Usage:
-#   minitool db list                    - List all configured databases
-#   minitool db proxy <db-name>         - Start proxy for DataGrip (local port forwarding)
-#   minitool db connect <db-name>       - Direct connect to database CLI
-#   minitool db proxy <db-name> -p 5432 - Use specific local port (overrides config)
+#   minitool db list                      - List all configured databases
+#   minitool db proxy <db-name>           - Start proxy for DataGrip (auto tsh login)
+#   minitool db proxy all --env <env>     - Start proxies for all databases in environment
+#   minitool db connect <db-name>         - Direct connect to database CLI (auto tsh login)
+#   minitool db proxy <db-name> -p 5432   - Use specific local port (overrides config)
+#
+# The tool will automatically run 'tsh login --proxy=<proxy> <cluster>' before
+# connecting to databases, based on the environment configuration.
 #
 # Generated command format:
+#   tsh login --proxy=<proxy> <cluster>
 #   tsh db connect <service_name> --db-user=<user> --db-name=<name>

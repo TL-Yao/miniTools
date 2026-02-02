@@ -13,22 +13,30 @@ var (
 	EmbeddedTranslateModel string
 )
 
+// TeleportEnvironment holds configuration for a Teleport environment (e.g. production, staging)
+type TeleportEnvironment struct {
+	Proxy   string `yaml:"proxy"`   // Proxy address (e.g. general-prod.xxx.com:443)
+	Cluster string `yaml:"cluster"` // Cluster address (e.g. general.xxx.prod.cdcinternal.com)
+}
+
 // TeleportDatabase holds configuration for a single Teleport database
 type TeleportDatabase struct {
 	Name        string            `yaml:"name"`         // Custom alias for this database (e.g. prod-db)
 	Description string            `yaml:"description"`  // Description of this database
+	Environment string            `yaml:"environment"`  // Environment name (e.g. production, staging)
 	ServiceName string            `yaml:"service_name"` // Teleport registered service name
 	DBName      string            `yaml:"db_name"`      // Actual database name (--db-name parameter)
 	DBProtocol  string            `yaml:"db_protocol"`  // Protocol (postgres, mysql, etc.)
 	DBUser      string            `yaml:"db_user"`      // Database user
-	Cluster     string            `yaml:"cluster"`      // Optional: Teleport cluster
+	Cluster     string            `yaml:"cluster"`      // Optional: Teleport cluster (deprecated, use environment)
 	LocalPort   int               `yaml:"local_port"`   // Local port for proxy mode (0 for auto)
 	Labels      map[string]string `yaml:"labels"`       // Optional: Teleport labels
 }
 
 // TeleportConfig holds Teleport-related configuration
 type TeleportConfig struct {
-	Databases []TeleportDatabase `yaml:"databases"`
+	Environments map[string]TeleportEnvironment `yaml:"environments"` // Environment configurations
+	Databases    []TeleportDatabase             `yaml:"databases"`
 }
 
 // Config holds application configuration
@@ -57,6 +65,43 @@ func (c *Config) GetDatabases() []TeleportDatabase {
 		return nil
 	}
 	return c.Teleport.Databases
+}
+
+// GetDatabasesByEnvironment returns all databases for a specific environment
+func (c *Config) GetDatabasesByEnvironment(envName string) []TeleportDatabase {
+	if c.Teleport == nil {
+		return nil
+	}
+	var result []TeleportDatabase
+	for _, db := range c.Teleport.Databases {
+		if db.Environment == envName {
+			result = append(result, db)
+		}
+	}
+	return result
+}
+
+// GetEnvironment returns the environment configuration by name
+func (c *Config) GetEnvironment(envName string) *TeleportEnvironment {
+	if c.Teleport == nil || c.Teleport.Environments == nil {
+		return nil
+	}
+	if env, ok := c.Teleport.Environments[envName]; ok {
+		return &env
+	}
+	return nil
+}
+
+// GetEnvironmentNames returns all configured environment names
+func (c *Config) GetEnvironmentNames() []string {
+	if c.Teleport == nil || c.Teleport.Environments == nil {
+		return nil
+	}
+	names := make([]string, 0, len(c.Teleport.Environments))
+	for name := range c.Teleport.Environments {
+		names = append(names, name)
+	}
+	return names
 }
 
 // DefaultConfig returns default configuration
