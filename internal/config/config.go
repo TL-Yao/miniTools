@@ -112,35 +112,53 @@ func DefaultConfig() *Config {
 }
 
 // Load loads configuration from file and environment
+// Priority (highest to lowest):
+// 1. Environment variables (ANTHROPIC_API_KEY, MINITOOL_TRANSLATE_MODEL)
+// 2. Local config.yaml (in current directory)
+// 3. User config directory (~/.config/minitool/config.yaml)
+// 4. Embedded config.yaml (compiled into binary)
+// 5. Embedded ldflags values (backward compatibility)
 func Load() (*Config, error) {
 	cfg := DefaultConfig()
 
-	// Try to load from local config.yaml first (in current directory)
+	// Priority 1: Load from embedded config.yaml (lowest priority, load first)
+	if len(embeddedConfigYAML) > 0 && embeddedConfigYAML != "# Placeholder\n" {
+		if err := yaml.Unmarshal([]byte(embeddedConfigYAML), cfg); err == nil {
+			// Embedded config loaded successfully
+		}
+		// Ignore errors - embedded config is optional
+	}
+
+	// Priority 2: Try to load from user config directory (overrides embedded)
+	configPath := getConfigPath()
+	if data, err := os.ReadFile(configPath); err == nil {
+		if err := yaml.Unmarshal(data, cfg); err != nil {
+			return nil, err
+		}
+	}
+
+	// Priority 3: Try to load from local config.yaml (overrides all file-based configs)
 	if data, err := os.ReadFile("config.yaml"); err == nil {
 		if err := yaml.Unmarshal(data, cfg); err != nil {
 			return nil, err
 		}
-	} else {
-		// Fall back to user config directory
-		configPath := getConfigPath()
-		if data, err := os.ReadFile(configPath); err == nil {
-			if err := yaml.Unmarshal(data, cfg); err != nil {
-				return nil, err
-			}
-		}
 	}
 
-	// Priority: env var > config file > embedded value
-	if apiKey := os.Getenv("ANTHROPIC_API_KEY"); apiKey != "" {
-		cfg.AnthropicAPIKey = apiKey
-	} else if cfg.AnthropicAPIKey == "" && EmbeddedAPIKey != "" {
+	// Priority 4: Apply ldflags embedded values (backward compatibility)
+	// Only apply if not already set by config files
+	if cfg.AnthropicAPIKey == "" && EmbeddedAPIKey != "" {
 		cfg.AnthropicAPIKey = EmbeddedAPIKey
 	}
+	if cfg.TranslateModel == "" && EmbeddedTranslateModel != "" {
+		cfg.TranslateModel = EmbeddedTranslateModel
+	}
 
+	// Priority 5: Environment variables (highest priority, overrides everything)
+	if apiKey := os.Getenv("ANTHROPIC_API_KEY"); apiKey != "" {
+		cfg.AnthropicAPIKey = apiKey
+	}
 	if model := os.Getenv("MINITOOL_TRANSLATE_MODEL"); model != "" {
 		cfg.TranslateModel = model
-	} else if cfg.TranslateModel == "" && EmbeddedTranslateModel != "" {
-		cfg.TranslateModel = EmbeddedTranslateModel
 	}
 
 	return cfg, nil
